@@ -1,0 +1,96 @@
+function extractBSECirculars() {
+  const sheetId = '18UpZu5yES3P5H-ulprdD2FpFQJBUlTwSvIejPKGT2X0';
+  const sheetName = 'Auto_BSE_Circulars';
+  const spreadsheet = SpreadsheetApp.openById(sheetId);
+  const sheet = spreadsheet.getSheetByName(sheetName);
+
+  if (!sheet) throw new Error(`Sheet with name "${sheetName}" not found.`);
+
+  // Add headers if sheet is empty
+  if (sheet.getLastRow() === 0) {
+    sheet.appendRow([
+      'Timestamp',
+      'Circular ID',
+      'Title (Linked)',
+      'Asset Class',
+      'Applicable to uTrade (Y/N)',
+      'Link',
+      'Category',
+      'Tag'
+    ]);
+  }
+
+  const data = sheet.getDataRange().getValues();
+  const existingIds = new Set(data.map(row => row[1]));
+  const keywords = ['Suspension', 'Surveillance', 'Price Band', 'ESM', 'ASM'];
+  const baseUrl = 'http://www.bseindia.com/markets/MarketInfo/DispNewNoticesCirculars.aspx?page=';
+
+  const threads = GmailApp.search('(from:ba@utradesolutions.com OR from:info@bseindia.com) subject:"Consolidated list of BSE circulars" newer_than:7d');
+  if (threads.length === 0) {
+    Logger.log('No relevant email found.');
+    return;
+  }
+
+  const msg = threads[0].getMessages()[0];
+  const html = msg.getBody();
+  const rowRegex = /<tr[\s\S]*?<\/tr>/gi;
+  const tdRegex = /<td[^>]*>(.*?)<\/td>/gi;
+
+  const rows = html.match(rowRegex);
+  Logger.log(`🧪 HTML <tr> rows found: ${rows ? rows.length : 0}`);
+  if (!rows || rows.length === 0) return;
+
+  let count = 0;
+
+  rows.forEach(rowHtml => {
+    const cells = [...rowHtml.matchAll(tdRegex)].map(m => m[1].replace(/<[^>]+>/g, '').trim());
+    if (cells.length < 4) return;
+
+    const [circularId, titleText, category, assetClass] = cells;
+    if (existingIds.has(circularId)) return;
+
+    const link = `${baseUrl}${circularId}`;
+    const titleWithLink = `=HYPERLINK("${link}", "${titleText.replace(/"/g, '""')}")`;
+    const keywordMatch = keywords.find(kw => titleText.toLowerCase().includes(kw.toLowerCase()));
+    const tag = keywordMatch ? `⚠️ ${keywordMatch}` : '';
+    const applicable = ['debt', 'mutual fund'].includes(assetClass.toLowerCase()) ? 'N' : '';
+
+    sheet.appendRow([
+      new Date(),
+      circularId,
+      titleWithLink,
+      assetClass,
+      applicable,
+      link,
+      category,
+      tag
+    ]);
+
+    count++;
+  });
+
+  Logger.log(`✅ ${count} new circular(s) written to the sheet.`);
+
+  // 🟩🟥 Conditional formatting on column E
+  const lastRow = sheet.getLastRow();
+  const range = sheet.getRange(`E2:E${lastRow}`);
+
+  const rules = sheet.getConditionalFormatRules().filter(r =>
+    !(r.getRanges().length && r.getRanges()[0].getA1Notation().startsWith('E'))
+  );
+
+  const redRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('N')
+    .setBackground('#f28b82') // red
+    .setRanges([range])
+    .build();
+
+  const greenRule = SpreadsheetApp.newConditionalFormatRule()
+    .whenTextEqualTo('Y')
+    .setBackground('#b7e1cd') // green
+    .setRanges([range])
+    .build();
+
+  rules.push(redRule, greenRule);
+  sheet.setConditionalFormatRules(rules);
+}
